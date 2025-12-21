@@ -17,8 +17,11 @@ limitations under the License.
 import hashlib
 import json
 import logging
+import threading
+import time
 import typing
 from abc import ABC, abstractmethod
+from enum import Enum
 
 import httpx
 from diskcache import Cache
@@ -32,6 +35,133 @@ from .errors import RateLimitError
 
 DEFAULT_TEMPERATURE = 0
 DEFAULT_CACHE_DIR = './llm_cache'
+
+
+class CircuitState(Enum):
+    """Circuit breaker states."""
+    CLOSED = "closed"
+    OPEN = "open"
+    HALF_OPEN = "half_open"
+
+
+class CircuitBreakerError(Exception):
+    """Exception raised when circuit breaker is open."""
+
+    def __init__(self, circuit_name: str, failure_count: int = 0):
+        self.circuit_name = circuit_name
+        self.failure_count = failure_count
+        super().__init__(f"Circuit breaker '{circuit_name}' is open after {failure_count} failures")
+
+
+class CircuitBreaker:
+    """Simple circuit breaker implementation for LLM calls.
+
+    Prevents cascading failures by temporarily stopping calls to failing services.
+    Circuit opens after failure threshold and stays open for reset timeout.
+    """
+
+    def __init__(
+        self,
+        failure_threshold: int = 5,
+        reset_timeout: int = 30,
+        success_threshold: int = 3,
+        name: str = "llm_circuit"
+    ):
+        self.failure_threshold = failure_threshold
+        self.reset_timeout = reset_timeout
+        self.success_threshold = success_threshold
+        self.name = name
+
+        self._state = CircuitState.CLOSED
+        self._failure_count = 0
+        self._success_count = 0
+        self._last_failure_time = 0
+        self._lock = threading.RLock()
+
+    def _should_attempt_reset(self) -> bool:
+        """Check if enough time has passed to attempt circuit reset."""
+        return time.time() - self._last_failure_time >= self.reset_timeout
+
+    def _call_succeeded(self):
+        """Handle successful call."""
+        with self._lock:
+            if self._state == CircuitState.HALF_OPEN:
+                self._success_count += 1
+                if self._success_count >= self.success_threshold:
+                    self._state = CircuitState.CLOSED
+                    self._failure_count = 0
+                    self._success_count = 0
+                    logger.info(f"Circuit breaker '{self.name}' closed after successful recovery")
+            elif self._state == CircuitState.CLOSED:
+                # Reset failure count on success in closed state
+                self._failure_count = 0
+
+    def _call_failed(self):
+        """Handle failed call."""
+        with self._lock:
+            self._failure_count += 1
+            self._last_failure_time = time.time()
+
+            if self._state == CircuitState.CLOSED:
+                if self._failure_count >= self.failure_threshold:
+                    self._state = CircuitState.OPEN
+                    logger.warning(
+                        f"Circuit breaker '{self.name}' opened after {self._failure_count} failures"
+                    )
+            elif self._state == CircuitState.HALF_OPEN:
+                self._state = CircuitState.OPEN
+                logger.warning(f"Circuit breaker '{self.name}' re-opened after failure in half-open state")
+
+    def call(self, func: typing.Callable, *args, **kwargs):
+        """Execute function through circuit breaker."""
+        with self._lock:
+            if self._state == CircuitState.OPEN:
+                if self._should_attempt_reset():
+                    self._state = CircuitState.HALF_OPEN
+                    self._success_count = 0
+                    logger.info(f"Circuit breaker '{self.name}' entering half-open state")
+                else:
+                    raise CircuitBreakerError(self.name, self._failure_count)
+
+        try:
+            result = func(*args, **kwargs)
+            self._call_succeeded()
+            return result
+        except Exception as e:
+            self._call_failed()
+            raise
+
+    async def call_async(self, coro: typing.Awaitable):
+        """Execute async function through circuit breaker."""
+        with self._lock:
+            if self._state == CircuitState.OPEN:
+                if self._should_attempt_reset():
+                    self._state = CircuitState.HALF_OPEN
+                    self._success_count = 0
+                    logger.info(f"Circuit breaker '{self.name}' entering half-open state")
+                else:
+                    raise CircuitBreakerError(self.name, self._failure_count)
+
+        try:
+            result = await coro
+            self._call_succeeded()
+            return result
+        except Exception as e:
+            self._call_failed()
+            raise
+
+    def get_state(self) -> typing.Dict[str, typing.Any]:
+        """Get current circuit breaker state."""
+        with self._lock:
+            return {
+                "state": self._state.value,
+                "failure_count": self._failure_count,
+                "success_count": self._success_count,
+                "last_failure_time": self._last_failure_time,
+                "failure_threshold": self.failure_threshold,
+                "success_threshold": self.success_threshold,
+                "reset_timeout": self.reset_timeout
+            }
 
 
 def get_extraction_language_instruction(group_id: str | None = None) -> str:
@@ -81,6 +211,14 @@ class LLMClient(ABC):
         self.cache_dir = None
         self.tracer: Tracer = NoOpTracer()
 
+        # Initialize circuit breaker with configurable parameters
+        self.circuit_breaker = CircuitBreaker(
+            failure_threshold=getattr(config, 'circuit_failure_threshold', 5),
+            reset_timeout=getattr(config, 'circuit_reset_timeout', 30),
+            success_threshold=getattr(config, 'circuit_success_threshold', 3),
+            name=f"llm_client_{self.__class__.__name__.lower()}"
+        )
+
         # Only create the cache directory if caching is enabled
         if self.cache_enabled:
             self.cache_dir = Cache(DEFAULT_CACHE_DIR)
@@ -88,6 +226,10 @@ class LLMClient(ABC):
     def set_tracer(self, tracer: Tracer) -> None:
         """Set the tracer for this LLM client."""
         self.tracer = tracer
+
+    def get_circuit_breaker_state(self) -> typing.Dict[str, typing.Any]:
+        """Get the current state of the circuit breaker."""
+        return self.circuit_breaker.get_state()
 
     def _clean_input(self, input: str) -> str:
         """Clean input string of invalid unicode and control characters.
@@ -129,10 +271,26 @@ class LLMClient(ABC):
         max_tokens: int = DEFAULT_MAX_TOKENS,
         model_size: ModelSize = ModelSize.medium,
     ) -> dict[str, typing.Any]:
+        """Generate response with retry logic and circuit breaker protection."""
+        async def _generate_response_internal():
+            try:
+                return await self._generate_response(messages, response_model, max_tokens, model_size)
+            except (httpx.HTTPStatusError, RateLimitError) as e:
+                raise e
+
+        # Wrap the actual call with circuit breaker
         try:
-            return await self._generate_response(messages, response_model, max_tokens, model_size)
-        except (httpx.HTTPStatusError, RateLimitError) as e:
-            raise e
+            return await self.circuit_breaker.call_async(_generate_response_internal())
+        except CircuitBreakerError as e:
+            # Log circuit breaker events for observability
+            logger.error(
+                f"Circuit breaker '{e.circuit_name}' is open after {e.failure_count} failures. "
+                f"LLM calls are temporarily disabled."
+            )
+            raise
+        except Exception as e:
+            # Other exceptions will be handled by the retry decorator
+            raise
 
     @abstractmethod
     async def _generate_response(
@@ -178,11 +336,17 @@ class LLMClient(ABC):
 
         # Wrap entire operation in tracing span
         with self.tracer.start_span('llm.generate') as span:
+            # Get circuit breaker state for observability
+            cb_state = self.circuit_breaker.get_state()
+
             attributes = {
                 'llm.provider': self._get_provider_type(),
                 'model.size': model_size.value,
                 'max_tokens': max_tokens,
                 'cache.enabled': self.cache_enabled,
+                'circuit_breaker.state': cb_state['state'],
+                'circuit_breaker.failure_count': cb_state['failure_count'],
+                'circuit_breaker.name': self.circuit_breaker.name,
             }
             if prompt_name:
                 attributes['prompt.name'] = prompt_name
@@ -204,7 +368,26 @@ class LLMClient(ABC):
                 response = await self._generate_response_with_retry(
                     messages, response_model, max_tokens, model_size
                 )
+
+                # Add circuit breaker state after successful call
+                final_cb_state = self.circuit_breaker.get_state()
+                span.add_attribute('circuit_breaker.final_state', final_cb_state['state'])
+
+            except CircuitBreakerError as e:
+                # Record circuit breaker specific events
+                span.add_event('circuit_breaker_open', {
+                    'circuit_name': e.circuit_name,
+                    'failure_count': e.failure_count,
+                    'action': 'llm_call_blocked'
+                })
+                span.set_status('error', f'Circuit breaker {e.circuit_name} is open')
+                span.record_exception(e)
+                raise
             except Exception as e:
+                # Add circuit breaker state after failed call
+                final_cb_state = self.circuit_breaker.get_state()
+                span.add_attribute('circuit_breaker.final_state', final_cb_state['state'])
+
                 span.set_status('error', str(e))
                 span.record_exception(e)
                 raise
