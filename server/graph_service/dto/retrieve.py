@@ -105,6 +105,14 @@ class SearchQuery(BaseModel):
         None, description='Filter for facts expired at or before this datetime'
     )
 
+    # Entity filters (simplified interface for common use cases)
+    node_labels: list[str] | None = Field(
+        None, description='List of node labels to filter search results on'
+    )
+    edge_types: list[str] | None = Field(
+        None, description='List of edge types to filter search results on'
+    )
+
     # Advanced filtering (for complex filtering needs)
     filters: SearchFilters | None = Field(
         None, description='Advanced filtering options including complex date filters, entity filters, and property filters'
