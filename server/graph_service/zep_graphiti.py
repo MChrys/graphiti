@@ -7,6 +7,7 @@ from graphiti_core.edges import EntityEdge  # type: ignore
 from graphiti_core.errors import EdgeNotFoundError, GroupsEdgesNotFoundError, NodeNotFoundError
 from graphiti_core.llm_client import LLMClient  # type: ignore
 from graphiti_core.nodes import EntityNode, EpisodicNode  # type: ignore
+from graphiti_core.embedder import OpenAIEmbedder, OpenAIEmbedderConfig  # type: ignore
 
 from graph_service.config import ZepEnvDep
 from graph_service.dto import FactResult
@@ -15,8 +16,8 @@ logger = logging.getLogger(__name__)
 
 
 class ZepGraphiti(Graphiti):
-    def __init__(self, uri: str, user: str, password: str, llm_client: LLMClient | None = None):
-        super().__init__(uri, user, password, llm_client)
+    def __init__(self, uri: str, user: str, password: str, llm_client: LLMClient | None = None, embedder=None):
+        super().__init__(uri, user, password, llm_client, embedder=embedder)
 
     async def save_entity_node(self, name: str, uuid: str, group_id: str, summary: str = ''):
         new_node = EntityNode(
@@ -72,11 +73,33 @@ class ZepGraphiti(Graphiti):
 
 
 async def get_graphiti(settings: ZepEnvDep):
+    print(f"[DEBUG] Creating Graphiti client - embedding_model_name: {settings.embedding_model_name}", flush=True)
+    logger.info(f"Creating Graphiti client - embedding_model_name: {settings.embedding_model_name}")
+
+    # Create embedder first if custom model is specified
+    embedder = None
+    if settings.embedding_model_name is not None:
+        print(f"[DEBUG] Creating custom embedder with model: {settings.embedding_model_name}", flush=True)
+        embedder_config = OpenAIEmbedderConfig(
+            embedding_model=settings.embedding_model_name,
+            api_key=settings.openai_api_key,
+            base_url=settings.openai_base_url,
+        )
+        embedder = OpenAIEmbedder(embedder_config)
+        print(f"[DEBUG] Embedder created - model: {embedder.config.embedding_model}", flush=True)
+    else:
+        print("[DEBUG] No custom embedding_model_name set, using default embedder", flush=True)
+        logger.warning("No custom embedding_model_name set, using default embedder")
+
+    # Create Graphiti client with custom embedder
     client = ZepGraphiti(
         uri=settings.neo4j_uri,
         user=settings.neo4j_user,
         password=settings.neo4j_password,
+        embedder=embedder,
     )
+    print(f"[DEBUG] Client created - embedder model: {client.embedder.config.embedding_model if hasattr(client.embedder, 'config') else 'unknown'}", flush=True)
+
     if settings.openai_base_url is not None:
         client.llm_client.config.base_url = settings.openai_base_url
     if settings.openai_api_key is not None:
