@@ -287,12 +287,37 @@ async def search(query: SearchQuery, graphiti: ZepGraphitiDep):
         # Calculate search time
         search_time_ms = int((time() - start_time) * 1000)
 
+        # Build search configuration metadata
+        search_config_metadata = {
+            "edge_search_methods": [method.value for method in search_config.edge_config.search_methods],
+            "node_search_methods": [method.value for method in search_config.node_config.search_methods] if search_config.node_config else None,
+            "edge_reranker": search_config.edge_config.reranker.value,
+            "node_reranker": search_config.node_config.reranker.value if search_config.node_config else None,
+            "limit": search_config.limit,
+        }
+
+        # Determine ranking method and thresholds
+        ranking_method = search_config.edge_config.reranker.value
+        min_score_threshold = search_config.edge_config.sim_min_score
+
+        # Add MMR-specific metadata
+        if ranking_method == "mmr":
+            search_config_metadata["mmr_lambda"] = search_config.edge_config.mmr_lambda
+            max_score_possible = 1.0  # MMR scores are typically normalized
+        else:
+            max_score_possible = None  # Varies by method
+
         # Build response with all result types and scores
         response = SearchResults(
             facts=facts,
             fact_scores=search_results.edge_reranker_scores if search_results.edge_reranker_scores else None,
             total_results=len(facts),
             search_time_ms=search_time_ms,
+            search_config_used=search_config_metadata,
+            ranking_method=ranking_method,
+            score_normalization="none",  # Core search doesn't normalize by default
+            max_score_possible=max_score_possible,
+            min_score_threshold=min_score_threshold,
         )
 
         # Add advanced result types if requested
@@ -329,7 +354,69 @@ async def search(query: SearchQuery, graphiti: ZepGraphitiDep):
             facts=facts,
             total_results=len(facts),
             search_time_ms=search_time_ms,
+            search_config_used={"method": "hybrid_search_rrf", "description": "Default hybrid search with reciprocal rank fusion"},
+            ranking_method="rrf",
+            score_normalization="none",
+            max_score_possible=None,
+            min_score_threshold=None,
         )
+
+
+@router.post('/search-advanced', status_code=status.HTTP_200_OK)
+async def search_advanced(query: SearchQuery, graphiti: ZepGraphitiDep):
+    """
+    Advanced search endpoint with full access to all search configurations.
+
+    This endpoint always uses the advanced search system and provides complete
+    access to all filtering, ranking, and result configuration options.
+    Unlike the standard /search endpoint, it doesn't fall back to basic search
+    for simple queries, ensuring consistent advanced behavior.
+    """
+    start_time = time()
+
+    # Always use advanced search with all parameters
+    search_config = _convert_search_config_from_query(query)
+    search_filters = _build_search_filters_from_query(query)
+
+    search_results = await graphiti.search_(
+        query=query.query,
+        config=search_config,
+        group_ids=query.group_ids,
+        search_filter=search_filters,
+    )
+
+    # Convert edges to facts
+    facts = [get_fact_result_from_edge(edge) for edge in search_results.edges]
+
+    # Calculate search time
+    search_time_ms = int((time() - start_time) * 1000)
+
+    # Build response with all result types and scores
+    response = SearchResults(
+        facts=facts,
+        fact_scores=search_results.edge_reranker_scores if search_results.edge_reranker_scores else None,
+        total_results=len(facts),
+        search_time_ms=search_time_ms,
+    )
+
+    # Always include advanced result types when available
+    if search_results.nodes:
+        response.nodes = [node.to_dict() for node in search_results.nodes]
+        response.node_scores = search_results.node_reranker_scores
+
+    if search_results.edges:
+        response.edges = [edge.to_dict() for edge in search_results.edges]
+        response.edge_scores = search_results.edge_reranker_scores
+
+    if search_results.episodes:
+        response.episodes = [episode.to_dict() for episode in search_results.episodes]
+        response.episode_scores = search_results.episode_reranker_scores
+
+    if search_results.communities:
+        response.communities = [community.to_dict() for community in search_results.communities]
+        response.community_scores = search_results.community_reranker_scores
+
+    return response
 
 
 @router.get('/entity-edge/{uuid}', status_code=status.HTTP_200_OK)
