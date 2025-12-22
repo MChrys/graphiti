@@ -78,6 +78,7 @@ class ZepGraphiti(Graphiti):
         center_node_uuid: str | None = None,
         num_results: int = 10,
         search_filter=None,
+        config=None,
         driver=None,
         **kwargs
     ):
@@ -99,6 +100,8 @@ class ZepGraphiti(Graphiti):
             The maximum number of results to return. Defaults to 10.
         search_filter : SearchFilters | None, optional
             Advanced search filters for date ranges, entity types, and property-based filtering.
+        config : SearchConfig | None, optional
+            Advanced search configuration for ranking methods and search behavior.
         driver : GraphDriver | None, optional
             The database driver to use for the search.
         **kwargs
@@ -106,18 +109,32 @@ class ZepGraphiti(Graphiti):
 
         Returns
         -------
-        list[EntityEdge]
-            A list of EntityEdge objects that are relevant to the search query.
+        list[EntityEdge] | SearchResults
+            Either a list of EntityEdge objects (basic search) or SearchResults object (advanced search)
+            depending on whether advanced parameters are provided.
         """
-        # Use the parent class's search implementation with the provided parameters
-        return await super().search(
-            query=query,
-            center_node_uuid=center_node_uuid,
-            group_ids=group_ids,
-            num_results=num_results,
-            search_filter=search_filter,
-            driver=driver
-        )
+        # Use advanced search if config is provided
+        if config is not None:
+            # Use the advanced search_ method
+            search_results = await super().search_(
+                query=query,
+                config=config,
+                center_node_uuid=center_node_uuid,
+                group_ids=group_ids,
+                search_filter=search_filter,
+                driver=driver
+            )
+            return search_results
+        else:
+            # Use the basic parent class search implementation for backward compatibility
+            return await super().search(
+                query=query,
+                center_node_uuid=center_node_uuid,
+                group_ids=group_ids,
+                num_results=num_results,
+                search_filter=search_filter,
+                driver=driver
+            )
 
     def create_search_filters(
         self,
