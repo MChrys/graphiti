@@ -18,7 +18,7 @@ from graph_service.dto import (
 )
 from graph_service.zep_graphiti import ZepGraphitiDep, get_fact_result_from_edge
 
-router = APIRouter()
+router = APIRouter(tags=["search"])
 
 
 def _convert_date_filter_to_core(dto_date_filter: DateFilter):
@@ -236,6 +236,8 @@ def _convert_search_config_from_query(query: SearchQuery):
         query.reranker is not None or
         query.min_score is not None or
         query.mmr_lambda is not None or
+        query.reranker_min_score is not None or
+        query.bfs_max_depth is not None or
         not query.include_edges or  # Default search only returns edges
         query.include_nodes or
         query.include_episodes or
@@ -263,6 +265,8 @@ def _convert_search_config_from_query(query: SearchQuery):
             reranker=reranker,
             sim_min_score=query.min_score or 0.0,
             mmr_lambda=query.mmr_lambda or 0.5,
+            reranker_min_score=query.reranker_min_score or 0.0,
+            bfs_max_depth=query.bfs_max_depth or 3,
         )
 
         node_config = None
@@ -272,6 +276,8 @@ def _convert_search_config_from_query(query: SearchQuery):
                 reranker=reranker,
                 sim_min_score=query.min_score or 0.0,
                 mmr_lambda=query.mmr_lambda or 0.5,
+                reranker_min_score=query.reranker_min_score or 0.0,
+                bfs_max_depth=query.bfs_max_depth or 3,
             )
 
         return SearchConfig(
@@ -286,9 +292,65 @@ def _convert_search_config_from_query(query: SearchQuery):
         return config
 
 
-@router.post('/search', status_code=status.HTTP_200_OK)
+@router.post(
+    '/search',
+    status_code=status.HTTP_200_OK,
+    summary="Search knowledge graph with advanced filtering and ranking",
+    description="""
+    Search the knowledge graph with comprehensive filtering, ranking, and result configuration options.
+
+    This endpoint automatically detects when to use advanced search features while maintaining backward compatibility.
+    Simple queries use optimized basic search, while queries with advanced parameters trigger enhanced search capabilities.
+
+    **Features:**
+    - Date range filtering (created_at, valid_at, invalid_at, expired_at)
+    - Entity type filtering (node_labels, edge_types)
+    - Advanced property-based filtering with comparison operators
+    - Multiple search methods (cosine similarity, BM25, BFS)
+    - Advanced ranking options (RRF, MMR, cross-encoder, node distance, episode mentions)
+    - Configurable result types (nodes, edges, episodes, communities)
+    - Search metadata and performance timing
+
+    **Backward Compatibility:**
+    Existing clients continue to work without any changes. Simple queries are automatically optimized for performance.
+    """,
+    responses={
+        200: {
+            "description": "Search results with facts and optional metadata",
+            "content": {
+                "application/json": {
+                    "example": {
+                        "facts": [
+                            {
+                                "uuid": "123e4567-e89b-12d3-a456-426614174000",
+                                "name": "John works at TechCorp",
+                                "fact": "John Doe is employed as a Senior Engineer at TechCorp since 2023",
+                                "valid_at": "2023-01-01T00:00:00Z",
+                                "invalid_at": None,
+                                "created_at": "2023-01-01T00:00:00Z",
+                                "expired_at": None
+                            }
+                        ],
+                        "fact_scores": [0.95, 0.87],
+                        "total_results": 25,
+                        "search_time_ms": 150,
+                        "search_config_used": {
+                            "edge_search_methods": ["cosine_similarity", "bm25"],
+                            "node_search_methods": null,
+                            "edge_reranker": "reciprocal_rank_fusion",
+                            "limit": 10
+                        },
+                        "ranking_method": "rrf",
+                        "score_normalization": "none",
+                        "max_score_possible": None,
+                        "min_score_threshold": 0.6
+                    }
+                }
+            }
+        }
+    }
+)
 async def search(query: SearchQuery, graphiti: ZepGraphitiDep):
-    """Search the knowledge graph with advanced filtering and ranking options."""
     start_time = time()
 
     # Determine if we need to use advanced search
@@ -298,6 +360,8 @@ async def search(query: SearchQuery, graphiti: ZepGraphitiDep):
         query.reranker is not None or
         query.min_score is not None or
         query.mmr_lambda is not None or
+        query.reranker_min_score is not None or
+        query.bfs_max_depth is not None or
         not query.include_edges or  # Default search only returns edges
         query.include_nodes or
         query.include_episodes or
@@ -320,7 +384,7 @@ async def search(query: SearchQuery, graphiti: ZepGraphitiDep):
         search_config = _convert_search_config_from_query(query)
         search_filters = _build_search_filters_from_query(query)
 
-        search_results = await graphiti.search_(
+        search_results = await graphiti.search(
             query=query.query,
             config=search_config,
             group_ids=query.group_ids,
@@ -408,23 +472,79 @@ async def search(query: SearchQuery, graphiti: ZepGraphitiDep):
         )
 
 
-@router.post('/search-advanced', status_code=status.HTTP_200_OK)
-async def search_advanced(query: SearchQuery, graphiti: ZepGraphitiDep):
-    """
-    Advanced search endpoint with full access to all search configurations.
+@router.post(
+    '/search-advanced',
+    status_code=status.HTTP_200_OK,
+    summary="Advanced search with full configuration access",
+    description="""
+    Advanced search endpoint that always uses the enhanced search system with complete access to all configurations.
 
-    This endpoint always uses the advanced search system and provides complete
-    access to all filtering, ranking, and result configuration options.
-    Unlike the standard /search endpoint, it doesn't fall back to basic search
-    for simple queries, ensuring consistent advanced behavior.
-    """
+    Unlike the standard /search endpoint, this endpoint never falls back to basic search, ensuring consistent
+    advanced behavior regardless of query complexity. This provides predictable performance and feature set.
+
+    **Key Differences from /search:**
+    - Always uses advanced search (no automatic fallback)
+    - Consistent behavior for all query types
+    - Includes all result types when available
+    - Full access to search configuration options
+
+    **Use Cases:**
+    - Applications requiring consistent advanced features
+    - Complex filtering and ranking scenarios
+    - When you need all result types (nodes, edges, episodes, communities)
+    - Debugging advanced search configurations
+    """,
+    responses={
+        200: {
+            "description": "Advanced search results with comprehensive metadata and all result types",
+            "content": {
+                "application/json": {
+                    "example": {
+                        "facts": [
+                            {
+                                "uuid": "123e4567-e89b-12d3-a456-426614174000",
+                                "name": "AI Research Breakthrough",
+                                "fact": "Research team published breakthrough paper on transformer architectures",
+                                "valid_at": "2024-03-15T00:00:00Z",
+                                "invalid_at": None,
+                                "created_at": "2024-03-15T00:00:00Z",
+                                "expired_at": None
+                            }
+                        ],
+                        "fact_scores": [0.98, 0.92],
+                        "nodes": [
+                            {
+                                "uuid": "node-123",
+                                "name": "Transformer Architecture",
+                                "labels": ["Concept", "Technology"]
+                            }
+                        ],
+                        "node_scores": [0.95],
+                        "edges": [
+                            {
+                                "uuid": "edge-456",
+                                "source_node": "node-123",
+                                "target_node": "node-789",
+                                "type": "ENABLES"
+                            }
+                        ],
+                        "edge_scores": [0.97],
+                        "total_results": 50,
+                        "search_time_ms": 220
+                    }
+                }
+            }
+        }
+    }
+)
+async def search_advanced(query: SearchQuery, graphiti: ZepGraphitiDep):
     start_time = time()
 
     # Always use advanced search with all parameters
     search_config = _convert_search_config_from_query(query)
     search_filters = _build_search_filters_from_query(query)
 
-    search_results = await graphiti.search_(
+    search_results = await graphiti.search(
         query=query.query,
         config=search_config,
         group_ids=query.group_ids,
@@ -479,12 +599,70 @@ async def get_episodes(group_id: str, last_n: int, graphiti: ZepGraphitiDep):
     return episodes
 
 
-@router.post('/get-memory', status_code=status.HTTP_200_OK)
+@router.post(
+    '/get-memory',
+    status_code=status.HTTP_200_OK,
+    summary="Retrieve contextual memory with advanced search capabilities",
+    description="""
+    Retrieve memory facts based on message context with comprehensive search and filtering options.
+
+    This endpoint builds a search query from the provided messages and applies the same advanced
+    filtering and ranking capabilities available in the search endpoints. It's designed for
+    conversational AI applications that need to retrieve relevant context from the knowledge graph.
+
+    **Key Features:**
+    - Automatic query composition from message history
+    - Advanced filtering (date ranges, entity types, properties)
+    - Multiple ranking methods (RRF, MMR, cross-encoder, etc.)
+    - Configurable result types and scoring
+    - Backward compatible with existing get-memory implementations
+
+    **Use Cases:**
+    - Conversational AI context retrieval
+    - Chatbot memory access
+    - Context-aware question answering
+    - Session-based memory management
+    """,
+    responses={
+        200: {
+            "description": "Memory retrieval results with contextual facts and metadata",
+            "content": {
+                "application/json": {
+                    "example": {
+                        "facts": [
+                            {
+                                "uuid": "123e4567-e89b-12d3-a456-426614174000",
+                                "name": "User Preferences",
+                                "fact": "User prefers TypeScript over JavaScript for frontend development",
+                                "valid_at": "2024-01-01T00:00:00Z",
+                                "invalid_at": None,
+                                "created_at": "2024-01-01T00:00:00Z",
+                                "expired_at": None
+                            }
+                        ],
+                        "fact_scores": [0.94, 0.88],
+                        "total_results": 15,
+                        "search_time_ms": 180,
+                        "search_config_used": {
+                            "edge_search_methods": ["cosine_similarity", "bm25"],
+                            "edge_reranker": "mmr",
+                            "mmr_lambda": 0.5,
+                            "limit": 10
+                        },
+                        "ranking_method": "mmr",
+                        "score_normalization": "none",
+                        "max_score_possible": 1.0,
+                        "min_score_threshold": 0.7
+                    }
+                }
+            }
+        }
+    }
+)
 async def get_memory(
     request: GetMemoryRequest,
     graphiti: ZepGraphitiDep,
 ):
-    """Get memory with advanced filtering and ranking options."""
     start_time = time()
 
     combined_query = compose_query_from_messages(request.messages)
@@ -496,6 +674,8 @@ async def get_memory(
         request.reranker is not None or
         request.min_score is not None or
         request.mmr_lambda is not None or
+        request.reranker_min_score is not None or
+        request.bfs_max_depth is not None or
         not request.include_edges or  # Default search only returns edges
         request.include_nodes or
         request.include_episodes or
@@ -547,7 +727,7 @@ async def get_memory(
         search_config = _convert_search_config_from_query(search_query)
         search_filters = _build_search_filters_from_query(search_query)
 
-        search_results = await graphiti.search_(
+        search_results = await graphiti.search(
             query=search_query.query,
             config=search_config,
             group_ids=search_query.group_ids,

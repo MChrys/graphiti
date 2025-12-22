@@ -73,11 +73,29 @@ class SearchFilters(BaseModel):
 
 
 class SearchQuery(BaseModel):
+    """
+    Search query with comprehensive filtering and ranking options.
+
+    This model supports both basic and advanced search scenarios. Simple queries
+    will automatically use optimized basic search, while advanced parameters
+    trigger enhanced search capabilities.
+    """
     group_ids: list[str] | None = Field(
-        None, description='The group ids for the memories to search'
+        None,
+        description='The group ids for the memories to search',
+        example=["group-123", "group-456"]
     )
-    query: str
-    max_facts: int = Field(default=10, description='The maximum number of facts to retrieve')
+    query: str = Field(
+        description='Search query text',
+        example="machine learning engineers working at tech companies"
+    )
+    max_facts: int = Field(
+        default=10,
+        description='The maximum number of facts to retrieve',
+        ge=1,
+        le=1000,
+        example=10
+    )
 
     # Date range filters (simplified interface for common use cases)
     created_at_start: datetime | None = Field(

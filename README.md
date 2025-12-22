@@ -290,6 +290,192 @@ workflows.
 
 For detailed setup instructions and usage examples, see the [MCP server README](./mcp_server/README.md).
 
+## Advanced Search and Filtering
+
+Graphiti's REST service provides powerful search capabilities with comprehensive filtering, ranking, and result configuration options. The search endpoints automatically detect when to use advanced features while maintaining backward compatibility.
+
+### Search Endpoints
+
+#### `POST /search`
+The primary search endpoint that intelligently switches between basic and advanced search based on the parameters provided.
+
+**Features:**
+- **Date Range Filtering**: Filter by creation, validity, invalidation, and expiration timestamps
+- **Entity Filtering**: Filter by node labels and edge types
+- **Property Filtering**: Advanced filtering on graph properties with comparison operators
+- **Multiple Search Methods**: BM25, cosine similarity, breadth-first search
+- **Advanced Ranking**: RRF, MMR, cross-encoder, node distance, episode mentions
+- **Configurable Results**: Include nodes, edges, episodes, and communities
+- **Performance Metadata**: Search timing and configuration details
+
+**Request Parameters:**
+```json
+{
+  "group_ids": ["group-123"],
+  "query": "machine learning engineers working at tech companies",
+  "max_facts": 10,
+
+  // Date range filters
+  "created_at_start": "2024-01-01T00:00:00Z",
+  "created_at_end": "2024-12-31T23:59:59Z",
+  "valid_at_start": "2024-01-01T00:00:00Z",
+  "valid_at_end": "2024-12-31T23:59:59Z",
+
+  // Entity filters
+  "node_labels": ["Person", "Company"],
+  "edge_types": ["WORKS_AT", "EMPLOYS"],
+
+  // Advanced filtering
+  "filters": {
+    "property_filters": [
+      {
+        "property_name": "department",
+        "property_value": "Engineering",
+        "comparison_operator": "="
+      }
+    ]
+  },
+
+  // Search methods
+  "node_search_methods": ["cosine_similarity", "bm25"],
+  "edge_search_methods": ["cosine_similarity", "bm25"],
+
+  // Ranking options
+  "reranker": "mmr",
+  "min_score": 0.7,
+  "mmr_lambda": 0.5,
+  "reranker_min_score": 0.3,
+
+  // Result configuration
+  "include_nodes": true,
+  "include_edges": true,
+  "include_episodes": false,
+  "include_communities": false
+}
+```
+
+**Response Format:**
+```json
+{
+  "facts": [
+    {
+      "uuid": "123e4567-e89b-12d3-a456-426614174000",
+      "name": "Sarah's Role",
+      "fact": "Sarah Chen is a Senior ML Engineer at TechCorp",
+      "valid_at": "2024-03-01T00:00:00Z",
+      "invalid_at": null,
+      "created_at": "2024-03-01T00:00:00Z",
+      "expired_at": null
+    }
+  ],
+
+  // Scoring information
+  "fact_scores": [0.95, 0.87],
+
+  // Search metadata
+  "total_results": 25,
+  "search_time_ms": 150,
+  "search_config_used": {
+    "edge_search_methods": ["cosine_similarity", "bm25"],
+    "node_search_methods": ["cosine_similarity"],
+    "edge_reranker": "mmr",
+    "mmr_lambda": 0.5,
+    "limit": 10
+  },
+  "ranking_method": "mmr",
+  "score_normalization": "none",
+  "max_score_possible": 1.0,
+  "min_score_threshold": 0.7,
+
+  // Advanced result types (when enabled)
+  "nodes": [
+    {
+      "uuid": "node-123",
+      "name": "Sarah Chen",
+      "labels": ["Person", "Engineer"]
+    }
+  ],
+  "node_scores": [0.95],
+
+  "edges": [
+    {
+      "uuid": "edge-456",
+      "source_node": "node-123",
+      "target_node": "node-789",
+      "type": "WORKS_AT"
+    }
+  ],
+  "edge_scores": [0.97],
+
+  "episodes": [...],
+  "episode_scores": [...],
+
+  "communities": [...],
+  "community_scores": [...]
+}
+```
+
+#### `POST /search-advanced`
+Always uses the enhanced search system with consistent advanced behavior, regardless of query complexity.
+
+#### `POST /get-memory`
+Contextual memory retrieval for conversational AI applications with the same advanced filtering and ranking capabilities.
+
+### Ranking Methods
+
+| Method | Description | Use Case |
+|--------|-------------|----------|
+| **RRF** (Reciprocal Rank Fusion) | Default hybrid ranking combining multiple search methods | General purpose, balanced relevance and diversity |
+| **MMR** (Maximal Marginal Relevance) | Balances relevance and diversity using lambda parameter | When you need diverse results to avoid redundancy |
+| **Cross-Encoder** | Advanced neural reranking for highest precision | When accuracy is more important than speed |
+| **Node Distance** | Uses graph traversal distance for ranking | When graph structure relationships are important |
+| **Episode Mentions** | Reranks based on episode co-occurrence | When contextual relationships matter |
+
+### Filtering Options
+
+**Date Fields:**
+- `created_at`: When the fact was ingested
+- `valid_at`: When the fact became/valid
+- `invalid_at`: When the fact became invalid
+- `expired_at`: When the fact expired
+
+**Comparison Operators:**
+- `=`, `<>`, `>`, `<`, `>=`, `<=`, `IS NULL`, `IS NOT NULL`
+
+**Entity Filters:**
+- `node_labels`: Filter by node types (Person, Company, etc.)
+- `edge_types`: Filter by relationship types (WORKS_AT, LOCATED_IN, etc.)
+
+### Usage Examples
+
+**Basic Search:**
+```bash
+curl -X POST "http://localhost:8000/search" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "group_ids": ["my-group"],
+    "query": "machine learning engineers",
+    "max_facts": 10
+  }'
+```
+
+**Advanced Search with Filtering:**
+```bash
+curl -X POST "http://localhost:8000/search" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "group_ids": ["my-group"],
+    "query": "engineers",
+    "max_facts": 20,
+    "node_labels": ["Person"],
+    "edge_types": ["WORKS_AT"],
+    "created_at_start": "2024-01-01T00:00:00Z",
+    "reranker": "mmr",
+    "mmr_lambda": 0.3,
+    "include_nodes": true
+  }'
+```
+
 ## REST Service
 
 The `server` directory contains an API service for interacting with the Graphiti API. It is built using FastAPI.

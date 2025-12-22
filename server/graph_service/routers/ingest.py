@@ -45,7 +45,7 @@ async def lifespan(_: FastAPI):
     await async_worker.stop()
 
 
-router = APIRouter(lifespan=lifespan)
+router = APIRouter(lifespan=lifespan, tags=["ingest"])
 
 
 @router.post('/messages', status_code=status.HTTP_202_ACCEPTED)
