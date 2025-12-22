@@ -112,29 +112,49 @@ class ZepGraphiti(Graphiti):
         list[EntityEdge] | SearchResults
             Either a list of EntityEdge objects (basic search) or SearchResults object (advanced search)
             depending on whether advanced parameters are provided.
+
+        Raises
+        ------
+        ValueError
+            If search configuration is invalid or parameters are malformed.
         """
-        # Use advanced search if config is provided
-        if config is not None:
-            # Use the advanced search_ method
-            search_results = await super().search_(
-                query=query,
-                config=config,
-                center_node_uuid=center_node_uuid,
-                group_ids=group_ids,
-                search_filter=search_filter,
-                driver=driver
-            )
-            return search_results
-        else:
-            # Use the basic parent class search implementation for backward compatibility
-            return await super().search(
-                query=query,
-                center_node_uuid=center_node_uuid,
-                group_ids=group_ids,
-                num_results=num_results,
-                search_filter=search_filter,
-                driver=driver
-            )
+        try:
+            # Validate input parameters
+            if not query or not isinstance(query, str):
+                raise ValueError("Query must be a non-empty string")
+
+            if config is not None:
+                # Validate the search configuration before using it
+                self.validate_search_config(config)
+
+                # Use the advanced search_ method
+                search_results = await super().search_(
+                    query=query,
+                    config=config,
+                    center_node_uuid=center_node_uuid,
+                    group_ids=group_ids,
+                    search_filter=search_filter,
+                    driver=driver
+                )
+                return search_results
+            else:
+                # Use the basic parent class search implementation for backward compatibility
+                return await super().search(
+                    query=query,
+                    center_node_uuid=center_node_uuid,
+                    group_ids=group_ids,
+                    num_results=num_results,
+                    search_filter=search_filter,
+                    driver=driver
+                )
+        except Exception as e:
+            # Log the error and re-raise with more context
+            logger.error(f"Search failed for query '{query[:50]}...': {e}")
+            # Re-raise ValueError as-is, wrap other exceptions
+            if isinstance(e, ValueError):
+                raise
+            else:
+                raise RuntimeError(f"Search operation failed: {e}") from e
 
     def create_search_filters(
         self,
@@ -554,11 +574,19 @@ class ZepGraphiti(Graphiti):
             - 'edge_hybrid_rrf': Hybrid edge search with reciprocal rank fusion
             - 'edge_hybrid_mmr': Hybrid edge search with MMR reranking
             - 'edge_hybrid_cross_encoder': Hybrid edge search with cross-encoder reranking
+            - 'edge_hybrid_node_distance': Hybrid edge search with node distance reranking
+            - 'edge_hybrid_episode_mentions': Hybrid edge search with episode mentions reranking
             - 'node_hybrid_rrf': Hybrid node search with reciprocal rank fusion
             - 'node_hybrid_mmr': Hybrid node search with MMR reranking
+            - 'node_hybrid_cross_encoder': Hybrid node search with cross-encoder reranking
+            - 'node_hybrid_node_distance': Hybrid node search with node distance reranking
+            - 'node_hybrid_episode_mentions': Hybrid node search with episode mentions reranking
             - 'combined_hybrid_rrf': Hybrid search over edges, nodes, and communities with RRF
             - 'combined_hybrid_mmr': Hybrid search over edges, nodes, and communities with MMR
             - 'combined_hybrid_cross_encoder': Hybrid search with cross-encoder reranking
+            - 'community_hybrid_rrf': Hybrid community search with reciprocal rank fusion
+            - 'community_hybrid_mmr': Hybrid community search with MMR reranking
+            - 'community_hybrid_cross_encoder': Hybrid community search with cross-encoder reranking
         limit : int, optional
             Override the default limit from the recipe.
         **override_params
@@ -578,11 +606,19 @@ class ZepGraphiti(Graphiti):
             EDGE_HYBRID_SEARCH_RRF,
             EDGE_HYBRID_SEARCH_MMR,
             EDGE_HYBRID_SEARCH_CROSS_ENCODER,
+            EDGE_HYBRID_SEARCH_NODE_DISTANCE,
+            EDGE_HYBRID_SEARCH_EPISODE_MENTIONS,
             NODE_HYBRID_SEARCH_RRF,
             NODE_HYBRID_SEARCH_MMR,
+            NODE_HYBRID_SEARCH_CROSS_ENCODER,
+            NODE_HYBRID_SEARCH_NODE_DISTANCE,
+            NODE_HYBRID_SEARCH_EPISODE_MENTIONS,
             COMBINED_HYBRID_SEARCH_RRF,
             COMBINED_HYBRID_SEARCH_MMR,
             COMBINED_HYBRID_SEARCH_CROSS_ENCODER,
+            COMMUNITY_HYBRID_SEARCH_RRF,
+            COMMUNITY_HYBRID_SEARCH_MMR,
+            COMMUNITY_HYBRID_SEARCH_CROSS_ENCODER,
         )
 
         # Map recipe names to configuration objects
@@ -590,11 +626,19 @@ class ZepGraphiti(Graphiti):
             'edge_hybrid_rrf': EDGE_HYBRID_SEARCH_RRF,
             'edge_hybrid_mmr': EDGE_HYBRID_SEARCH_MMR,
             'edge_hybrid_cross_encoder': EDGE_HYBRID_SEARCH_CROSS_ENCODER,
+            'edge_hybrid_node_distance': EDGE_HYBRID_SEARCH_NODE_DISTANCE,
+            'edge_hybrid_episode_mentions': EDGE_HYBRID_SEARCH_EPISODE_MENTIONS,
             'node_hybrid_rrf': NODE_HYBRID_SEARCH_RRF,
             'node_hybrid_mmr': NODE_HYBRID_SEARCH_MMR,
+            'node_hybrid_cross_encoder': NODE_HYBRID_SEARCH_CROSS_ENCODER,
+            'node_hybrid_node_distance': NODE_HYBRID_SEARCH_NODE_DISTANCE,
+            'node_hybrid_episode_mentions': NODE_HYBRID_SEARCH_EPISODE_MENTIONS,
             'combined_hybrid_rrf': COMBINED_HYBRID_SEARCH_RRF,
             'combined_hybrid_mmr': COMBINED_HYBRID_SEARCH_MMR,
             'combined_hybrid_cross_encoder': COMBINED_HYBRID_SEARCH_CROSS_ENCODER,
+            'community_hybrid_rrf': COMMUNITY_HYBRID_SEARCH_RRF,
+            'community_hybrid_mmr': COMMUNITY_HYBRID_SEARCH_MMR,
+            'community_hybrid_cross_encoder': COMMUNITY_HYBRID_SEARCH_CROSS_ENCODER,
         }
 
         if recipe_name not in recipe_map:
@@ -609,30 +653,174 @@ class ZepGraphiti(Graphiti):
 
         # Apply limit override if provided
         if limit is not None:
+            if limit <= 0:
+                raise ValueError(f"Limit must be a positive integer, got {limit}")
             config_dict['limit'] = limit
 
-        # Apply additional parameter overrides
+        # Apply additional parameter overrides with validation
         for param_name, param_value in override_params.items():
-            if param_name in config_dict:
-                config_dict[param_name] = param_value
-            elif '.' in param_name:
-                # Handle nested parameters like 'edge_config.reranker'
-                parts = param_name.split('.')
-                if len(parts) == 2 and parts[0] in config_dict:
-                    if config_dict[parts[0]] is not None:
-                        config_dict[parts[0]][parts[1]] = param_value
-                    else:
-                        # Initialize the nested config if it's None
-                        from graphiti_core.search.search_config import EdgeSearchConfig, NodeSearchConfig
-                        if parts[0] == 'edge_config':
-                            config_dict['edge_config'] = EdgeSearchConfig().model_dump()
-                        elif parts[0] == 'node_config':
-                            config_dict['node_config'] = NodeSearchConfig().model_dump()
-                        config_dict[parts[0]][parts[1]] = param_value
+            try:
+                if param_name in config_dict:
+                    # Validate top-level parameters
+                    if param_name == 'limit' and param_value is not None:
+                        if param_value <= 0:
+                            raise ValueError(f"Limit must be a positive integer, got {param_value}")
+                    elif param_name == 'reranker_min_score' and param_value is not None:
+                        if not isinstance(param_value, (int, float)) or param_value < 0 or param_value > 1:
+                            raise ValueError(f"reranker_min_score must be a number between 0 and 1, got {param_value}")
 
-        # Reconstruct the SearchConfig from the modified dictionary
-        from graphiti_core.search.search_config import SearchConfig
-        return SearchConfig.model_validate(config_dict)
+                    config_dict[param_name] = param_value
+                elif '.' in param_name:
+                    # Handle nested parameters like 'edge_config.reranker'
+                    parts = param_name.split('.')
+                    if len(parts) == 2 and parts[0] in config_dict:
+                        nested_config_name = parts[0]
+                        nested_param_name = parts[1]
+
+                        # Initialize nested config if it's None
+                        if config_dict[nested_config_name] is None:
+                            from graphiti_core.search.search_config import (
+                                EdgeSearchConfig, NodeSearchConfig, EpisodeSearchConfig, CommunitySearchConfig
+                            )
+                            if nested_config_name == 'edge_config':
+                                config_dict[nested_config_name] = EdgeSearchConfig().model_dump()
+                            elif nested_config_name == 'node_config':
+                                config_dict[nested_config_name] = NodeSearchConfig().model_dump()
+                            elif nested_config_name == 'episode_config':
+                                config_dict[nested_config_name] = EpisodeSearchConfig().model_dump()
+                            elif nested_config_name == 'community_config':
+                                config_dict[nested_config_name] = CommunitySearchConfig().model_dump()
+                            else:
+                                continue  # Skip unknown nested config
+
+                        # Validate common nested parameters
+                        if nested_param_name in ['sim_min_score', 'mmr_lambda'] and param_value is not None:
+                            if not isinstance(param_value, (int, float)) or param_value < 0 or param_value > 1:
+                                raise ValueError(f"{param_name} must be a number between 0 and 1, got {param_value}")
+                        elif nested_param_name == 'bfs_max_depth' and param_value is not None:
+                            if not isinstance(param_value, int) or param_value <= 0:
+                                raise ValueError(f"{param_name} must be a positive integer, got {param_value}")
+
+                        config_dict[nested_config_name][nested_param_name] = param_value
+            except (ValueError, TypeError, AttributeError) as e:
+                raise ValueError(f"Invalid parameter override for '{param_name}': {e}") from e
+
+        # Reconstruct the SearchConfig from the modified dictionary with validation
+        try:
+            from graphiti_core.search.search_config import SearchConfig
+            return SearchConfig.model_validate(config_dict)
+        except Exception as e:
+            raise ValueError(f"Failed to create valid SearchConfig from recipe '{recipe_name}': {e}") from e
+
+    def get_available_recipes(self):
+        """
+        Get a list of all available search recipe names.
+
+        Returns
+        -------
+        list[str]
+            List of available recipe names that can be used with create_search_config_from_recipe().
+        """
+        from graphiti_core.search.search_config_recipes import (
+            EDGE_HYBRID_SEARCH_RRF,
+            EDGE_HYBRID_SEARCH_MMR,
+            EDGE_HYBRID_SEARCH_CROSS_ENCODER,
+            EDGE_HYBRID_SEARCH_NODE_DISTANCE,
+            EDGE_HYBRID_SEARCH_EPISODE_MENTIONS,
+            NODE_HYBRID_SEARCH_RRF,
+            NODE_HYBRID_SEARCH_MMR,
+            NODE_HYBRID_SEARCH_CROSS_ENCODER,
+            NODE_HYBRID_SEARCH_NODE_DISTANCE,
+            NODE_HYBRID_SEARCH_EPISODE_MENTIONS,
+            COMBINED_HYBRID_SEARCH_RRF,
+            COMBINED_HYBRID_SEARCH_MMR,
+            COMBINED_HYBRID_SEARCH_CROSS_ENCODER,
+            COMMUNITY_HYBRID_SEARCH_RRF,
+            COMMUNITY_HYBRID_SEARCH_MMR,
+            COMMUNITY_HYBRID_SEARCH_CROSS_ENCODER,
+        )
+
+        return [
+            'edge_hybrid_rrf',
+            'edge_hybrid_mmr',
+            'edge_hybrid_cross_encoder',
+            'edge_hybrid_node_distance',
+            'edge_hybrid_episode_mentions',
+            'node_hybrid_rrf',
+            'node_hybrid_mmr',
+            'node_hybrid_cross_encoder',
+            'node_hybrid_node_distance',
+            'node_hybrid_episode_mentions',
+            'combined_hybrid_rrf',
+            'combined_hybrid_mmr',
+            'combined_hybrid_cross_encoder',
+            'community_hybrid_rrf',
+            'community_hybrid_mmr',
+            'community_hybrid_cross_encoder',
+        ]
+
+    def validate_search_config(self, config):
+        """
+        Validate a SearchConfig object for common configuration issues.
+
+        This method performs validation checks on search configurations to ensure
+        they are properly configured and will work correctly with the search system.
+
+        Parameters
+        ----------
+        config : SearchConfig
+            The SearchConfig object to validate.
+
+        Returns
+        -------
+        bool
+            True if the configuration is valid.
+
+        Raises
+        ------
+        ValueError
+            If the configuration has invalid parameters.
+        """
+        if config is None:
+            raise ValueError("SearchConfig cannot be None")
+
+        # Validate limit
+        if hasattr(config, 'limit') and config.limit is not None:
+            if not isinstance(config.limit, int) or config.limit <= 0:
+                raise ValueError(f"SearchConfig.limit must be a positive integer, got {config.limit}")
+
+        # Validate reranker_min_score
+        if hasattr(config, 'reranker_min_score') and config.reranker_min_score is not None:
+            if not isinstance(config.reranker_min_score, (int, float)) or config.reranker_min_score < 0 or config.reranker_min_score > 1:
+                raise ValueError(f"SearchConfig.reranker_min_score must be between 0 and 1, got {config.reranker_min_score}")
+
+        # Validate edge_config if present
+        if hasattr(config, 'edge_config') and config.edge_config is not None:
+            edge_config = config.edge_config
+            if hasattr(edge_config, 'sim_min_score') and edge_config.sim_min_score is not None:
+                if not isinstance(edge_config.sim_min_score, (int, float)) or edge_config.sim_min_score < 0 or edge_config.sim_min_score > 1:
+                    raise ValueError(f"edge_config.sim_min_score must be between 0 and 1, got {edge_config.sim_min_score}")
+            if hasattr(edge_config, 'mmr_lambda') and edge_config.mmr_lambda is not None:
+                if not isinstance(edge_config.mmr_lambda, (int, float)) or edge_config.mmr_lambda < 0 or edge_config.mmr_lambda > 1:
+                    raise ValueError(f"edge_config.mmr_lambda must be between 0 and 1, got {edge_config.mmr_lambda}")
+            if hasattr(edge_config, 'bfs_max_depth') and edge_config.bfs_max_depth is not None:
+                if not isinstance(edge_config.bfs_max_depth, int) or edge_config.bfs_max_depth <= 0:
+                    raise ValueError(f"edge_config.bfs_max_depth must be a positive integer, got {edge_config.bfs_max_depth}")
+
+        # Validate node_config if present
+        if hasattr(config, 'node_config') and config.node_config is not None:
+            node_config = config.node_config
+            if hasattr(node_config, 'sim_min_score') and node_config.sim_min_score is not None:
+                if not isinstance(node_config.sim_min_score, (int, float)) or node_config.sim_min_score < 0 or node_config.sim_min_score > 1:
+                    raise ValueError(f"node_config.sim_min_score must be between 0 and 1, got {node_config.sim_min_score}")
+            if hasattr(node_config, 'mmr_lambda') and node_config.mmr_lambda is not None:
+                if not isinstance(node_config.mmr_lambda, (int, float)) or node_config.mmr_lambda < 0 or node_config.mmr_lambda > 1:
+                    raise ValueError(f"node_config.mmr_lambda must be between 0 and 1, got {node_config.mmr_lambda}")
+            if hasattr(node_config, 'bfs_max_depth') and node_config.bfs_max_depth is not None:
+                if not isinstance(node_config.bfs_max_depth, int) or node_config.bfs_max_depth <= 0:
+                    raise ValueError(f"node_config.bfs_max_depth must be a positive integer, got {node_config.bfs_max_depth}")
+
+        return True
 
 
 async def get_graphiti(settings: ZepEnvDep):
