@@ -336,7 +336,7 @@ def _convert_search_config_from_query(query: SearchQuery):
                         "search_time_ms": 150,
                         "search_config_used": {
                             "edge_search_methods": ["cosine_similarity", "bm25"],
-                            "node_search_methods": null,
+                            "node_search_methods": None,
                             "edge_reranker": "reciprocal_rank_fusion",
                             "limit": 10
                         },
