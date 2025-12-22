@@ -159,6 +159,52 @@ def _build_search_filters_from_query(query: SearchQuery):
         if date_filters:  # Only add if we have filters
             core_filters.valid_at.append(date_filters)
 
+    # Handle invalid_at date ranges
+    if query.invalid_at_start is not None or query.invalid_at_end is not None:
+        if core_filters.invalid_at is None:
+            core_filters.invalid_at = []
+
+        date_filters = []
+        if query.invalid_at_start is not None:
+            date_filters.append(
+                CoreDateFilter(
+                    date=query.invalid_at_start,
+                    comparison_operator=CoreComparisonOperator.greater_than_equal
+                )
+            )
+        if query.invalid_at_end is not None:
+            date_filters.append(
+                CoreDateFilter(
+                    date=query.invalid_at_end,
+                    comparison_operator=CoreComparisonOperator.less_than_equal
+                )
+            )
+        if date_filters:  # Only add if we have filters
+            core_filters.invalid_at.append(date_filters)
+
+    # Handle expired_at date ranges
+    if query.expired_at_start is not None or query.expired_at_end is not None:
+        if core_filters.expired_at is None:
+            core_filters.expired_at = []
+
+        date_filters = []
+        if query.expired_at_start is not None:
+            date_filters.append(
+                CoreDateFilter(
+                    date=query.expired_at_start,
+                    comparison_operator=CoreComparisonOperator.greater_than_equal
+                )
+            )
+        if query.expired_at_end is not None:
+            date_filters.append(
+                CoreDateFilter(
+                    date=query.expired_at_end,
+                    comparison_operator=CoreComparisonOperator.less_than_equal
+                )
+            )
+        if date_filters:  # Only add if we have filters
+            core_filters.expired_at.append(date_filters)
+
     # Add simplified entity filters if provided
     if query.node_labels is not None:
         core_filters.node_labels = query.node_labels
@@ -438,14 +484,155 @@ async def get_memory(
     request: GetMemoryRequest,
     graphiti: ZepGraphitiDep,
 ):
+    """Get memory with advanced filtering and ranking options."""
+    start_time = time()
+
     combined_query = compose_query_from_messages(request.messages)
-    result = await graphiti.search(
-        group_ids=[request.group_id],
-        query=combined_query,
-        num_results=request.max_facts,
+
+    # Determine if we need to use advanced search
+    use_advanced_search = (
+        request.node_search_methods is not None or
+        request.edge_search_methods is not None or
+        request.reranker is not None or
+        request.min_score is not None or
+        request.mmr_lambda is not None or
+        not request.include_edges or  # Default search only returns edges
+        request.include_nodes or
+        request.include_episodes or
+        request.include_communities or
+        request.filters is not None or
+        request.created_at_start is not None or
+        request.created_at_end is not None or
+        request.valid_at_start is not None or
+        request.valid_at_end is not None or
+        request.invalid_at_start is not None or
+        request.invalid_at_end is not None or
+        request.expired_at_start is not None or
+        request.expired_at_end is not None or
+        request.node_labels is not None or
+        request.edge_types is not None
     )
-    facts = [get_fact_result_from_edge(edge) for edge in result]
-    return GetMemoryResponse(facts=facts)
+
+    if use_advanced_search:
+        # Create a SearchQuery from the GetMemoryRequest to reuse helper functions
+        search_query = SearchQuery(
+            group_ids=[request.group_id],
+            query=combined_query,
+            max_facts=request.max_facts,
+            created_at_start=request.created_at_start,
+            created_at_end=request.created_at_end,
+            valid_at_start=request.valid_at_start,
+            valid_at_end=request.valid_at_end,
+            invalid_at_start=request.invalid_at_start,
+            invalid_at_end=request.invalid_at_end,
+            expired_at_start=request.expired_at_start,
+            expired_at_end=request.expired_at_end,
+            node_labels=request.node_labels,
+            edge_types=request.edge_types,
+            filters=request.filters,
+            node_search_methods=request.node_search_methods,
+            edge_search_methods=request.edge_search_methods,
+            reranker=request.reranker,
+            min_score=request.min_score,
+            mmr_lambda=request.mmr_lambda,
+            reranker_min_score=request.reranker_min_score,
+            bfs_max_depth=request.bfs_max_depth,
+            include_nodes=request.include_nodes,
+            include_edges=request.include_edges,
+            include_episodes=request.include_episodes,
+            include_communities=request.include_communities,
+        )
+
+        # Use advanced search with all parameters
+        search_config = _convert_search_config_from_query(search_query)
+        search_filters = _build_search_filters_from_query(search_query)
+
+        search_results = await graphiti.search_(
+            query=search_query.query,
+            config=search_config,
+            group_ids=search_query.group_ids,
+            search_filter=search_filters,
+        )
+
+        # Convert edges to facts
+        facts = [get_fact_result_from_edge(edge) for edge in search_results.edges]
+
+        # Calculate search time
+        search_time_ms = int((time() - start_time) * 1000)
+
+        # Build search configuration metadata
+        search_config_metadata = {
+            "edge_search_methods": [method.value for method in search_config.edge_config.search_methods],
+            "node_search_methods": [method.value for method in search_config.node_config.search_methods] if search_config.node_config else None,
+            "edge_reranker": search_config.edge_config.reranker.value,
+            "node_reranker": search_config.node_config.reranker.value if search_config.node_config else None,
+            "limit": search_config.limit,
+        }
+
+        # Determine ranking method and thresholds
+        ranking_method = search_config.edge_config.reranker.value
+        min_score_threshold = search_config.edge_config.sim_min_score
+
+        # Add MMR-specific metadata
+        if ranking_method == "mmr":
+            search_config_metadata["mmr_lambda"] = search_config.edge_config.mmr_lambda
+            max_score_possible = 1.0  # MMR scores are typically normalized
+        else:
+            max_score_possible = None  # Varies by method
+
+        # Build response with all result types and scores
+        response = GetMemoryResponse(
+            facts=facts,
+            fact_scores=search_results.edge_reranker_scores if search_results.edge_reranker_scores else None,
+            total_results=len(facts),
+            search_time_ms=search_time_ms,
+            search_config_used=search_config_metadata,
+            ranking_method=ranking_method,
+            score_normalization="none",  # Core search doesn't normalize by default
+            max_score_possible=max_score_possible,
+            min_score_threshold=min_score_threshold,
+        )
+
+        # Add advanced result types if requested
+        if request.include_nodes and search_results.nodes:
+            response.nodes = [node.to_dict() for node in search_results.nodes]
+            response.node_scores = search_results.node_reranker_scores
+
+        if request.include_edges and search_results.edges:
+            response.edges = [edge.to_dict() for edge in search_results.edges]
+            response.edge_scores = search_results.edge_reranker_scores
+
+        if request.include_episodes and search_results.episodes:
+            response.episodes = [episode.to_dict() for episode in search_results.episodes]
+            response.episode_scores = search_results.episode_reranker_scores
+
+        if request.include_communities and search_results.communities:
+            response.communities = [community.to_dict() for community in search_results.communities]
+            response.community_scores = search_results.community_reranker_scores
+
+        return response
+    else:
+        # Use basic search for backward compatibility
+        result = await graphiti.search(
+            group_ids=[request.group_id],
+            query=combined_query,
+            num_results=request.max_facts,
+        )
+        facts = [get_fact_result_from_edge(edge) for edge in result]
+
+        # Calculate search time
+        search_time_ms = int((time() - start_time) * 1000)
+
+        return GetMemoryResponse(
+            facts=facts,
+            total_results=len(facts),
+            search_time_ms=search_time_ms,
+            search_config_used={"method": "hybrid_search_rrf", "description": "Default hybrid search with reciprocal rank fusion"},
+            ranking_method="rrf",
+            score_normalization="none",
+            max_score_possible=None,
+            min_score_threshold=None,
+        )
 
 
 def compose_query_from_messages(messages: list[Message]):
