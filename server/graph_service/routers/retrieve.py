@@ -223,6 +223,7 @@ def _convert_search_config_from_query(query: SearchQuery):
         EdgeSearchMethod as CoreEdgeSearchMethod,
         NodeSearchMethod as CoreNodeSearchMethod,
         EdgeReranker as CoreEdgeReranker,
+        NodeReranker as CoreNodeReranker,
     )
     from graphiti_core.search.search_config_recipes import (
         EDGE_HYBRID_SEARCH_RRF,
@@ -254,15 +255,17 @@ def _convert_search_config_from_query(query: SearchQuery):
         if query.node_search_methods is not None:
             node_methods = [CoreNodeSearchMethod(method.value) for method in query.node_search_methods]
 
-        # Determine reranker
-        reranker = CoreEdgeReranker.rrf
+        # Determine rerankers (EdgeReranker for edges, NodeReranker for nodes)
+        edge_reranker = CoreEdgeReranker.rrf
+        node_reranker = CoreNodeReranker.rrf
         if query.reranker is not None:
-            reranker = CoreEdgeReranker(query.reranker.value)
+            edge_reranker = CoreEdgeReranker(query.reranker.value)
+            node_reranker = CoreNodeReranker(query.reranker.value)
 
         # Create configs
         edge_config = EdgeSearchConfig(
             search_methods=edge_methods,
-            reranker=reranker,
+            reranker=edge_reranker,
             sim_min_score=query.min_score or 0.0,
             mmr_lambda=query.mmr_lambda or 0.5,
             reranker_min_score=query.reranker_min_score or 0.0,
@@ -273,7 +276,7 @@ def _convert_search_config_from_query(query: SearchQuery):
         if query.include_nodes:
             node_config = NodeSearchConfig(
                 search_methods=node_methods,
-                reranker=reranker,
+                reranker=node_reranker,
                 sim_min_score=query.min_score or 0.0,
                 mmr_lambda=query.mmr_lambda or 0.5,
                 reranker_min_score=query.reranker_min_score or 0.0,
