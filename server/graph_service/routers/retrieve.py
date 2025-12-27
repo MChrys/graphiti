@@ -435,19 +435,19 @@ async def search(query: SearchQuery, graphiti: ZepGraphitiDep):
 
         # Add advanced result types if requested
         if query.include_nodes and search_results.nodes:
-            response.nodes = [node.to_dict() for node in search_results.nodes]
+            response.nodes = [node.model_dump() for node in search_results.nodes]
             response.node_scores = search_results.node_reranker_scores
 
         if query.include_edges and search_results.edges:
-            response.edges = [edge.to_dict() for edge in search_results.edges]
+            response.edges = [edge.model_dump() for edge in search_results.edges]
             response.edge_scores = search_results.edge_reranker_scores
 
         if query.include_episodes and search_results.episodes:
-            response.episodes = [episode.to_dict() for episode in search_results.episodes]
+            response.episodes = [episode.model_dump() for episode in search_results.episodes]
             response.episode_scores = search_results.episode_reranker_scores
 
         if query.include_communities and search_results.communities:
-            response.communities = [community.to_dict() for community in search_results.communities]
+            response.communities = [community.model_dump() for community in search_results.communities]
             response.community_scores = search_results.community_reranker_scores
 
         return response
@@ -570,19 +570,19 @@ async def search_advanced(query: SearchQuery, graphiti: ZepGraphitiDep):
 
     # Always include advanced result types when available
     if search_results.nodes:
-        response.nodes = [node.to_dict() for node in search_results.nodes]
+        response.nodes = [node.model_dump() for node in search_results.nodes]
         response.node_scores = search_results.node_reranker_scores
 
     if search_results.edges:
-        response.edges = [edge.to_dict() for edge in search_results.edges]
+        response.edges = [edge.model_dump() for edge in search_results.edges]
         response.edge_scores = search_results.edge_reranker_scores
 
     if search_results.episodes:
-        response.episodes = [episode.to_dict() for episode in search_results.episodes]
+        response.episodes = [episode.model_dump() for episode in search_results.episodes]
         response.episode_scores = search_results.episode_reranker_scores
 
     if search_results.communities:
-        response.communities = [community.to_dict() for community in search_results.communities]
+        response.communities = [community.model_dump() for community in search_results.communities]
         response.community_scores = search_results.community_reranker_scores
 
     return response
@@ -778,19 +778,19 @@ async def get_memory(
 
         # Add advanced result types if requested
         if request.include_nodes and search_results.nodes:
-            response.nodes = [node.to_dict() for node in search_results.nodes]
+            response.nodes = [node.model_dump() for node in search_results.nodes]
             response.node_scores = search_results.node_reranker_scores
 
         if request.include_edges and search_results.edges:
-            response.edges = [edge.to_dict() for edge in search_results.edges]
+            response.edges = [edge.model_dump() for edge in search_results.edges]
             response.edge_scores = search_results.edge_reranker_scores
 
         if request.include_episodes and search_results.episodes:
-            response.episodes = [episode.to_dict() for episode in search_results.episodes]
+            response.episodes = [episode.model_dump() for episode in search_results.episodes]
             response.episode_scores = search_results.episode_reranker_scores
 
         if request.include_communities and search_results.communities:
-            response.communities = [community.to_dict() for community in search_results.communities]
+            response.communities = [community.model_dump() for community in search_results.communities]
             response.community_scores = search_results.community_reranker_scores
 
         return response
